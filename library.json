@@ -1,0 +1,19 @@
+{
+  "name": "hunter-remote-control",
+  "description": "Use your Arduino to control Hunter Ceiling Fan",
+  "keywords": "rf, radio, wireless, hunter, 99119",
+  "authors":
+  {
+    "name": "Marrony Neris"
+  },
+  "repository":
+  {
+    "type": "git",
+    "url": "https://github.com/marrony/hunter-remote-control.git"
+  },
+  "version": "0.0.1",
+  "frameworks": [
+        "arduino"
+  ],
+  "platforms": "*"
+}
