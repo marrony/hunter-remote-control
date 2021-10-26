@@ -1,74 +1,18 @@
 #include "Hunter.h"
 
-#define PULSE_LONG 850
+#define MAX_CHANGES 132
+#define PULSE_LONG  850
 #define PULSE_SHORT 350
+
+#define STATE_LONG_GAP0 0
+#define STATE_LONG_GAP1 1
+#define STATE_SYNC      2
+#define STATE_SHORT_GAP 3
+#define STATE_DATA      4
+#define STATE_AVAILABLE 5
 
 static inline int16_t diff(long a, long b) {
   return abs(a - b);
-}
-
-bool Decoder::decodeCode(const long* timings, uint32_t* out) {
-  uint32_t code = 0;
-  for (uint16_t i = 0; i < 44; i += 2) {
-    code <<= 1;
-
-    long s = timings[i] + timings[i+1];
-    long p0 = (timings[i] * 100 + s - 1) / s;
-    long p1 = s - p0;
-
-    if (p0 > 50) {
-      code |= 1;
-    } else if (p1 > 50) {
-      code |= 0;
-    } else {
-      return false;
-    }
-  }
-
-  *out = code;
-  return true;
-}
-
-bool Decoder::decodeTimings(const long* timings, Command* cmd) {
-  //12 sync pulses
-  for (int i = 0; i < 11*2; i += 2) {
-    long s = timings[i] + timings[i+1];
-
-    if (diff(s, 800) > 100) {
-      return false;
-    }
-  }
-
-  if (diff(timings[22], 300) > 100) {
-    return false;
-  }
-
-  //5ms gap
-  if (diff(timings[23], 5200) > 200) {
-    return false;
-  }
-
-  for (int i = 24; i < 156; i += 2) {
-    long s = timings[i] + timings[i+1];
-
-    if (i < 154 && diff(s, 1200) > 200) {
-      return false;
-    }
-  }
-
-  if (!decodeCode(timings+24, &cmd->code0)) {
-    return false;
-  }
-
-  if (!decodeCode(timings+68, &cmd->code1)) {
-    return false;
-  }
-
-  if (!decodeCode(timings+112, &cmd->code2)) {
-    return false;
-  }
-
-  return true;
 }
 
 static inline void write(int pin, int value, int micros) {
@@ -76,17 +20,17 @@ static inline void write(int pin, int value, int micros) {
   delayMicroseconds(micros - 3);
 }
 
-static void sendSyncCode(int pin) {
+static void send_sync_code(int pin) {
   for (int i = 0; i < 11; i++) {
-    write(pin, HIGH, 300);
-    write(pin, LOW, 500);
+    write(pin, HIGH, 400);
+    write(pin, LOW, 400);
   }
 
-  write(pin, HIGH, 300);
-  write(pin, LOW, 5292);
+  write(pin, HIGH, 400);
+  write(pin, LOW, 5200);
 }
 
-static void sendCode(int pin, uint32_t code) {
+static void send_code(int pin, uint32_t code) {
   for (int i = 21; i >= 0; i--) {
     if (((code >> i) & 0x1) != 0) {
       write(pin, HIGH, PULSE_LONG);
@@ -98,105 +42,162 @@ static void sendCode(int pin, uint32_t code) {
   }
 }
 
-static HunterReceiver* thisHunter = nullptr;
+static int8_t _interrupt_pin = -1;
 
-HunterReceiver::HunterReceiver()
-  : _changeCount(0), _interruptPin(-1), _active(false), _available(false), _lastTime(0) {
-  thisHunter = this;
-}
+static volatile uint8_t _start_state = STATE_LONG_GAP1;
+static volatile uint8_t _state = _start_state;
+static volatile uint16_t _change_count = 0;
+static volatile long _last_time = 0;
+static volatile long _last_duration = 0;
+static volatile uint32_t _codes[3];
 
-bool HunterReceiver::available() const {
-  return _available;
-}
+//this is for debuging purposes
+static long _timings[MAX_CHANGES];
 
-void HunterReceiver::resetAvailable() {
-  _available = false;
-  _cmd = {0, 0, 0};
-}
+static void interrupt_handler();
 
-static void _interruptHandler() {
-  thisHunter->interruptHandler();
-}
-
-void HunterReceiver::enableReceive() {
-  if (_interruptPin != -1) {
-    attachInterrupt(digitalPinToInterrupt(_interruptPin), _interruptHandler, CHANGE);
+void hunter_enable_receive(int8_t interrupt_pin) {
+  _interrupt_pin = interrupt_pin;
+  if (_interrupt_pin != -1) {
+    attachInterrupt(digitalPinToInterrupt(_interrupt_pin), interrupt_handler, CHANGE);
   }
 }
 
-Command HunterReceiver::getCommand() const {
-  return _cmd;
+void hunter_disable_receive() {
+  detachInterrupt(digitalPinToInterrupt(_interrupt_pin));
 }
 
-void HunterReceiver::enableReceive(int8_t interruptPin) {
-  _interruptPin = interruptPin;
-  enableReceive();
+void hunter_wait_two_gaps() {
+  _start_state = STATE_LONG_GAP0;
 }
 
-void HunterReceiver::disableReceive() {
-  detachInterrupt(digitalPinToInterrupt(_interruptPin));
+bool hunter_available(uint32_t* codes) {
+  if (_state == STATE_AVAILABLE) {
+    codes[0] = _codes[0];
+    codes[1] = _codes[1];
+    codes[2] = _codes[2];
+    return true;
+  } else {
+    return false;
+  }
 }
 
-void HunterReceiver::interruptHandler() {
-  const long time = micros();
+void hunter_reset() {
+  _state = _start_state;
+  _change_count = 0;
+}
 
-  const long duration = time - _lastTime;
+static void interrupt_handler() {
+  long time = micros();
+  long duration = time - _last_time;
 
-  if (_active) {
-    _timings[_changeCount++] = duration;
-
-    if (_changeCount >= MAX_CHANGES) {
-      if (_timings[MAX_CHANGES - 1] > 1200) {
-        _timings[MAX_CHANGES - 1] = diff(_timings[MAX_CHANGES - 2], 1200);
+  switch (_state) {
+    case STATE_LONG_GAP0:
+      if (diff(duration, 25000) < 2000) {
+        _state = STATE_LONG_GAP1;
       }
 
-      if (Decoder::decodeTimings(_timings, &_cmd)) {
-        _available = true;
+      break;
+
+    case STATE_LONG_GAP1:
+      if (diff(duration, 25000) < 2000) {
+        _state = STATE_SYNC;
+        _change_count = 0;
       }
 
-      _active = false;
-      _changeCount = 0;
-    }
+      break;
+
+    case STATE_SYNC:
+      _change_count++;
+
+      if (_change_count % 2 == 0) {
+        if (diff(_last_duration + duration, 800) > 300) {
+          _state = _start_state;
+          _change_count = 0;
+        }
+      }
+
+      if (_change_count >= 23) {
+        if (diff(duration, 400) > 300) {
+          _state = _start_state;
+        } else {
+          _state = STATE_SHORT_GAP;
+        }
+      }
+
+      break;
+
+    case STATE_SHORT_GAP:
+      if (diff(duration, 5200) > 500) {
+        _state = _start_state;
+      } else {
+        _state = STATE_DATA;
+        _change_count = 0;
+      }
+
+      break;
+
+    case STATE_DATA:
+      _timings[_change_count++] = duration;
+
+      if (_change_count % 2 == 0) {
+        if (duration > 1200) {
+          duration = diff(_last_duration, 1200);
+          _timings[_change_count - 1] = duration;
+        }
+
+        if (diff(_last_duration + duration, 1200) > 1000) {
+          _state = _start_state;
+        } else {
+          int index = (_change_count - 1) / 44;
+
+          _codes[index] <<= 1;
+          if (_last_duration > duration) {
+            _codes[index] |= 1;
+          }
+        }
+      }
+
+      if (_change_count >= MAX_CHANGES) {
+        _codes[0] &= 0x3FFFFF;
+        _codes[1] &= 0x3FFFFF;
+        _codes[2] &= 0x3FFFFF;
+        _state = STATE_AVAILABLE;
+      }
+
+      break;
+
+    case STATE_AVAILABLE:
+      //keep in this state until reset
+      break;
   }
 
-  if (diff(duration, 25000) <= 2000) {
-    _active = true;
-    _changeCount = 0;
-  }
-
-  _lastTime = time;
+  _last_duration = duration;
+  _last_time = time;
 }
 
-void HunterReceiver::debug(Stream& serial) const {
-  ::debug(serial, _timings, &_cmd);
+void hunter_send_command(int8_t tx_pin, const uint32_t* code) {
+  send_sync_code(tx_pin);
+  send_code(tx_pin, code[0]);
+  send_code(tx_pin, code[1]);
+  send_code(tx_pin, code[2]);
 }
 
-HunterSender::HunterSender(int8_t pin)
-: _pin(pin)
-{ }
-
-void HunterSender::sendCommand(const Command& cmd) const {
-  sendSyncCode(_pin);
-  sendCode(_pin, cmd.code0);
-  sendCode(_pin, cmd.code1);
-  sendCode(_pin, cmd.code2);
-}
-
-void debug(Stream& serial, const long* timings, const Command* cmd) {
+void hunter_debug(Stream& serial) {
   serial.print("Timings: ");
-  serial.print(25000);
+  serial.print(5200);
   serial.print(",");
 
   for (int i = 0; i < MAX_CHANGES; i++) {
-    serial.print(timings[i]);
+    serial.print(_timings[i]);
     serial.print(",");
   }
 
   serial.println();
 
   serial.print("Codes: ");
-  serial.print("0x"); serial.print(cmd->code0, HEX); serial.print(", ");
-  serial.print("0x"); serial.print(cmd->code1, HEX); serial.print(", ");
-  serial.print("0x"); serial.println(cmd->code2, HEX);
+  serial.print("0x"); serial.print(_codes[0], HEX); serial.print(", ");
+  serial.print("0x"); serial.print(_codes[1], HEX); serial.print(", ");
+  serial.print("0x"); serial.println(_codes[2], HEX);
 }
 

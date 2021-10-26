@@ -1,24 +1,26 @@
-#include "Hunter.h"
+#include <Hunter.h>
 
-constexpr int8_t interruptPin = 2;
-
-HunterReceiver receiver;
+const byte interruptPin = 2;
 
 void setup() {
   Serial.begin(9600);
   pinMode(interruptPin, INPUT);
 
-  receiver.enableReceive(interruptPin);
+  hunter_enable_receive(interruptPin);
+//  hunter_wait_two_gaps();
 }
 
 void loop() {
-  if (receiver.available()) {
-    Command cmd = receiver.getCommand();
-    Serial.print(cmd.code0, HEX); Serial.print(" ");
-    Serial.print(cmd.code1, HEX); Serial.print(" ");
-    Serial.print(cmd.code2, HEX); Serial.println();
+  uint32_t code[3];
 
-    receiver.resetAvailable();
+  if (hunter_available(code)) {
+    Serial.print("Codes: 0x");
+    Serial.print(code[0], HEX); Serial.print(", 0x");
+    Serial.print(code[1], HEX); Serial.print(", 0x");
+    Serial.print(code[2], HEX); Serial.println();
+
+    //hunter_debug(Serial);
+    hunter_reset();
   }
 }
 

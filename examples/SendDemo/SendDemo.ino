@@ -1,8 +1,6 @@
-#include "Hunter.h"
+#include <Hunter.h>
 
 constexpr int8_t ledPin = 13;
-
-HunterSender sender(ledPin);
 
 void setup() {
   Serial.begin(9600);
@@ -16,8 +14,8 @@ const Command midFan      = {0x3FFEC2, 0x2A8AF0, 0x041FBE}; //00 0100 1111 1011 
 const Command maxFan      = {0x3FFEC2, 0x2A8AF0, 0x081F7E}; //00 1000 0001 0111 1110
 
 void loop() {
-  Serial.println("Sending command ...");
-  sender.sendCommand(offFan);
+  Serial.println("Sending ...");
+  hunter_send_command(ledPin, toggleLight);
   Serial.println("Reset your Arduino to send again.");
 
   while (1) {}

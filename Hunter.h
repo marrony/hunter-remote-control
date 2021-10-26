@@ -3,58 +3,16 @@
 
 #include "Arduino.h"
 
-#define MAX_CHANGES 156
+void hunter_enable_receive(int8_t interrupt_pin);
+void hunter_disable_receive();
+void hunter_wait_two_gaps();
 
-struct Command {
-  uint32_t code0;
-  uint32_t code1;
-  uint32_t code2;
-};
+bool hunter_available(uint32_t* codes);
+void hunter_reset();
 
-struct Decoder {
-  static bool decodeCode(const long* timings, uint32_t* out);
-  static bool decodeTimings(const long* timings, Command* out);
-};
+void hunter_send_command(int8_t tx_pin, const uint32_t* code);
 
-class HunterReceiver {
-public:
-  HunterReceiver();
-
-  bool available() const;
-  void resetAvailable();
-
-  Command getCommand() const;
-
-  void enableReceive(int8_t interruptPin);
-  void disableReceive();
-
-  void interruptHandler();
-
-  void debug(Stream& serial) const;
-private:
-  uint16_t _changeCount;
-  int8_t _interruptPin;
-  bool _active;
-  bool _available;
-
-  long _lastTime;
-  long _timings[MAX_CHANGES];
-  Command _cmd;
-
-  void enableReceive();
-};
-
-class HunterSender {
-public:
-  HunterSender(int8_t pin);
-
-  void sendCommand(const Command& cmd) const;
-
-private:
-  int8_t _pin;
-};
-
-void debug(Stream& serial, const long* timings, const Command* cmd);
+void hunter_debug(Stream& serial);
 
 #endif //HUNTER_H
 
